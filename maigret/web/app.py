@@ -11,6 +11,7 @@ from flask import (
 from werkzeug.exceptions import NotFound
 import logging
 import os
+import re
 import asyncio
 import json
 import queue
@@ -401,9 +402,28 @@ def process_search_task(usernames, options, timestamp):
         background_jobs[timestamp]['completed'] = True
 
 
+# Mirrors the validation the standalone Telegram bot used to do before
+# handing a username to maigret: at least 5 chars, Latin letters/digits/-/_.
+USERNAME_RE = re.compile(r'^[a-zA-Z0-9\-_.]{5,}$')
+
+
 def parse_usernames(form):
+    """Split, @-strip and validate the usernames field.
+
+    Returns (valid, invalid) so callers can search the valid ones while
+    telling the user which entries were skipped and why.
+    """
     usernames_input = form.get('usernames', '').strip()
-    return [u.strip() for u in usernames_input.replace(',', ' ').split() if u.strip()]
+    raw = [u.strip().lstrip('@') for u in usernames_input.replace(',', ' ').split() if u.strip()]
+    valid = [u for u in raw if USERNAME_RE.match(u)]
+    invalid = [u for u in raw if not USERNAME_RE.match(u)]
+    return valid, invalid
+
+
+INVALID_USERNAME_MSG = (
+    'must be at least 5 characters long and contain only Latin letters, '
+    'digits, "-", "_" or "."'
+)
 
 
 def parse_search_options(form):
@@ -499,13 +519,21 @@ def start_live_job(usernames, options):
 
 @app.route('/api/scan', methods=['POST'])
 def scan_start():
-    usernames = parse_usernames(request.form)
+    usernames, invalid = parse_usernames(request.form)
     if not usernames:
+        if invalid:
+            return {
+                'error': f'No valid usernames given ({INVALID_USERNAME_MSG}): '
+                + ', '.join(invalid)
+            }, 400
         return {'error': 'At least one username is required'}, 400
 
     options = parse_search_options(request.form)
     job_id = start_live_job(usernames, options)
-    return {'job_id': job_id}
+    response: Dict[str, Any] = {'job_id': job_id}
+    if invalid:
+        response['skipped'] = invalid
+    return response
 
 
 @app.route('/api/scan/<job_id>/stream')
@@ -576,9 +604,15 @@ def history():
 
 @app.route('/live', methods=['POST'])
 def live_start():
-    usernames = parse_usernames(request.form)
+    usernames, invalid = parse_usernames(request.form)
+    if invalid:
+        flash(
+            f'Skipped invalid username(s) ({INVALID_USERNAME_MSG}): '
+            + ', '.join(invalid),
+            'warning',
+        )
     if not usernames:
-        flash('At least one username is required', 'danger')
+        flash('At least one valid username is required', 'danger')
         return redirect(url_for('index'))
 
     options = parse_search_options(request.form)
@@ -603,9 +637,15 @@ def live_results(job_id):
 # Modified search route
 @app.route('/search', methods=['POST'])
 def search():
-    usernames = parse_usernames(request.form)
+    usernames, invalid = parse_usernames(request.form)
+    if invalid:
+        flash(
+            f'Skipped invalid username(s) ({INVALID_USERNAME_MSG}): '
+            + ', '.join(invalid),
+            'warning',
+        )
     if not usernames:
-        flash('At least one username is required', 'danger')
+        flash('At least one valid username is required', 'danger')
         return redirect(url_for('index'))
 
     # Create timestamp for this search session
