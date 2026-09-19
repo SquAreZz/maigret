@@ -219,10 +219,10 @@
 
     <div class="main-container">
         <div class="container">
-            {% with messages = get_flashed_messages() %}
+            {% with messages = get_flashed_messages(with_categories=true) %}
             {% if messages %}
-            {% for message in messages %}
-            <div class="alert alert-info">{{ message }}</div>
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }}">{{ message }}</div>
             {% endfor %}
             {% endif %}
             {% endwith %}
